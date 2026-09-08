@@ -19,17 +19,6 @@ import neopixel
 
 import adafruit_ds3231
 
-import displayio
-import terminalio
-from adafruit_bitmap_font import bitmap_font
-from adafruit_display_text import label
-from adafruit_progressbar.horizontalprogressbar import HorizontalProgressBar
-
-import usb_hid
-from adafruit_hid.keyboard import Keyboard
-from adafruit_hid.keyboard_layout_us import KeyboardLayoutUS
-from adafruit_hid.keycode import Keycode
-
 from totp import KeyStore, STEAM_ALPHABET
 from usage import UsageTracker, KEY_COLORS, color_map
 
@@ -78,6 +67,23 @@ shortcut_keys = [index_of[name] for name in usage.shortcuts(labels, len(KEY_COLO
 # Colours are keyed on the account, not the key position, so moving up the
 # rankings takes an account's colour with it.
 shortcut_colors = color_map([labels[key] for key in shortcut_keys])
+gc.collect()
+
+# The display and HID libraries cost about 50 KB of heap between them, so they
+# are imported only once the backup has been read and released. Decrypting and
+# parsing the backup is the largest allocation of the boot and wants the
+# emptiest heap it can get.
+import displayio
+import terminalio
+from adafruit_bitmap_font import bitmap_font
+from adafruit_display_text import label
+from adafruit_progressbar.horizontalprogressbar import HorizontalProgressBar
+
+import usb_hid
+from adafruit_hid.keyboard import Keyboard
+from adafruit_hid.keyboard_layout_us import KeyboardLayoutUS
+from adafruit_hid.keycode import Keycode
+
 gc.collect()
 
 # -------------------------------------------------------------------------

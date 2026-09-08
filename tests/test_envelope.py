@@ -82,6 +82,95 @@ class TestCounterMode(unittest.TestCase):
         self.assertEqual(len(set(blocks)), 4)
 
 
+class TestNativeFastPath(unittest.TestCase):
+    """The aesio fast path must be proven, never assumed."""
+
+    def test_kat_constants_are_the_published_vector(self):
+        self.assertEqual(envelope.KAT_KEY, SP800_38A_KEY)
+        self.assertEqual(envelope.KAT_NONCE, SP800_38A_NONCE)
+        self.assertEqual(envelope.KAT_PLAIN, SP800_38A_PLAIN)
+        self.assertEqual(envelope.KAT_CIPHER, SP800_38A_CIPHER)
+
+    def test_portable_path_satisfies_the_same_vector(self):
+        buf = bytearray(envelope.KAT_PLAIN)
+        envelope._portable_ctr_into(envelope.KAT_KEY, envelope.KAT_NONCE, buf)
+        self.assertEqual(bytes(buf), envelope.KAT_CIPHER)
+
+    def test_no_aesio_means_no_fast_path(self):
+        saved = envelope.aesio
+        envelope.aesio = None
+        try:
+            self.assertFalse(envelope._native_ctr_is_standard())
+        finally:
+            envelope.aesio = saved
+
+    def test_a_conforming_backend_is_accepted(self):
+        """A stub that behaves like SP 800-38A passes the check."""
+        envelope.aesio = _StubAesio(conforming=True)
+        try:
+            self.assertTrue(envelope._native_ctr_is_standard())
+        finally:
+            envelope.aesio = None
+
+    def test_a_divergent_backend_is_rejected(self):
+        """A counter that only increments its last four bytes must be caught."""
+        envelope.aesio = _StubAesio(conforming=False)
+        try:
+            self.assertFalse(envelope._native_ctr_is_standard())
+        finally:
+            envelope.aesio = None
+
+    def test_a_throwing_backend_is_rejected(self):
+        envelope.aesio = _ExplodingAesio()
+        try:
+            self.assertFalse(envelope._native_ctr_is_standard())
+        finally:
+            envelope.aesio = None
+
+
+class _StubAesio:
+    """Stands in for the native module, correctly or otherwise."""
+
+    MODE_CTR = 6
+    MODE_ECB = 1
+
+    def __init__(self, conforming):
+        self.conforming = conforming
+
+    def AES(self, key, mode, nonce=None):
+        outer = self
+
+        class _Session:
+            def encrypt_into(self, src, dest):
+                if outer.conforming:
+                    buf = bytearray(src)
+                    envelope._portable_ctr_into(key, nonce, buf)
+                    dest[:] = buf
+                else:
+                    # increment only the low 32 bits, a plausible wrong choice
+                    from aes import AES as Block
+
+                    cipher = Block(key)
+                    prefix = int.from_bytes(nonce[:12], "big")
+                    low = int.from_bytes(nonce[12:], "big")
+                    out = bytearray(len(src))
+                    for start in range(0, len(src), 16):
+                        counter = prefix.to_bytes(12, "big") + ((low + start // 16) & 0xFFFFFFFF).to_bytes(4, "big")
+                        block = cipher.encrypt_block(counter)
+                        for i in range(start, min(start + 16, len(src))):
+                            out[i] = src[i] ^ block[i - start]
+                    dest[:] = out
+
+        return _Session()
+
+
+class _ExplodingAesio:
+    MODE_CTR = 6
+
+    def AES(self, *args, **kwargs):
+        raise RuntimeError("no hardware AES here")
+
+
 class TestKeyDerivation(unittest.TestCase):
     def test_new_key_length_and_randomness(self):
         first, second = envelope.new_key(), envelope.new_key()

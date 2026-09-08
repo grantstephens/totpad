@@ -23,7 +23,7 @@ MODULES = totp.py usage.py envelope.py hashes.py aes.py
 SOURCES = boot.py code.py README.md
 BUILD = build
 
-.PHONY: help test install install-src libs firmware flash tools mpy keygen encrypt status check-secrets clean distclean
+.PHONY: help test install install-src install-serial serial-check set-clock libs firmware flash tools mpy keygen encrypt status check-secrets clean distclean
 
 help:
 	@echo "Targets:"
@@ -33,6 +33,9 @@ help:
 	@echo "  mpy            Compile $(MODULES) to .mpy"
 	@echo "  install        Copy code to the MacroPad as .mpy, encrypting BACKUP"
 	@echo "  install-src    Copy code as plain .py instead, for debugging"
+	@echo "  install-serial Push code over USB serial, with the drive still hidden"
+	@echo "  serial-check   Report firmware, crypto backend, clock and memory"
+	@echo "  set-clock      Set the DS3231 from this host's NTP-synced clock"
 	@echo "  libs           Install the required libraries from the bundle"
 	@echo "  firmware       Download CircuitPython $(CP_VERSION) for $(BOARD)"
 	@echo "  flash          Copy the firmware to a MacroPad in bootloader mode"
@@ -111,6 +114,18 @@ install-src:
 	@for src in $(MODULES); do rm -fv "$(CIRCUITPY)/$${src%.py}.mpy"; done
 	$(copy_backup)
 	@echo "Installed (source). Replug without holding the key to hide the drive."
+
+PORT ?= /dev/ttyACM0
+
+# Works while boot.py has the drive hidden, which is the normal state.
+install-serial: mpy
+	python3 tools/push_serial.py -p $(PORT) boot.py code.py $(BUILD)/*.mpy --reload
+
+serial-check:
+	@python3 tools/push_serial.py -p $(PORT) --exec "$$(cat tools/checks.py)"
+
+set-clock:
+	python3 tools/set_clock.py -p $(PORT)
 
 $(BUNDLE):
 	@mkdir -p $(TOOLS)

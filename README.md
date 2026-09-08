@@ -18,6 +18,8 @@ between power cycles.
 | `hashes.py` | Hash backends shared by the generator and the envelope. |
 | `aes.py` | Pure-Python AES, used where there is no `aesio` (the host, the tests). |
 | `tools/encrypt_backup.py` | Host side: make a key file, encrypt a backup, verify one. |
+| `tools/push_serial.py` | Install over USB serial while the drive is hidden. |
+| `tools/set_clock.py` | Set the DS3231 from the host's clock. |
 | `Makefile` | `make help` lists everything: test, mpy, install, libs, firmware, flash. |
 | `boot.py` | Hides the USB drive unless the top-left key is held at power-on. |
 | `example.2fas.example` | A fake backup used by the tests. Contains no real secrets. |
@@ -63,9 +65,17 @@ an encrypted backup is preferred when both are present.
 those two by name. The other modules ship as `.mpy` to cut boot time;
 `make install-src` puts the readable versions on instead, for debugging.
 
-`make install BACKUP=path/to/backup.2fas` does the copy. The
-`.2fas` file is the only configuration; any single `*.2fas` in the root is
-picked up automatically.
+`make install BACKUP=path/to/backup.2fas` does the copy. The backup file is the
+only configuration; any single `*.2fas` or `*.2fas.enc` in the root is picked up
+automatically.
+
+Because `boot.py` normally hides the drive, `make install-serial` pushes the code
+through the USB serial console instead, which works without holding a key at
+power-on. `make serial-check` reports firmware, crypto backend, clock and free
+memory, and `make set-clock` sets the DS3231 from this host.
+
+**Keep the clock right.** TOTP tolerates about ±30 s, so a minute of DS3231 drift
+breaks every code. `make set-clock` fixes it; `make serial-check` shows it.
 
 ## Using it
 
@@ -178,6 +188,19 @@ secret, built the two 64 byte HMAC key pads, and ran two pure-Python SHA1
 passes for *every* code, behind a hard-coded 0.5 s delay before it would even
 begin. Codes took a noticeable moment to appear.
 
+Measured on the hardware, decrypting and loading 39 accounts at boot:
+
+| Step | Time |
+| --- | --- |
+| Read the file | 13 ms |
+| Derive keys | 12 ms |
+| Verify HMAC-SHA256 | 33 ms |
+| AES-256-CTR (`aesio`) | 80 ms |
+| Parse JSON | 158 ms |
+| **Total `KeyStore` construction** | **557 ms** |
+
+Generating one code afterwards is about 4 ms.
+
 - Base32 decoding and HMAC pad expansion happen once at load, for all keys.
 - Generating a code is then two SHA1 hashes over pre-built buffers.
 - The native C `hashlib` is used when available, falling back to
@@ -206,12 +229,21 @@ Encryption and authentication keys are derived separately from the key file, so
 neither is used for two purposes. A fresh random nonce per sealing means
 re-encrypting the same export twice produces different files.
 
-AES is driven as a plain block cipher, with the counter arithmetic and the XOR
-in `envelope.py`. `aesio` has a counter mode of its own, but using it would mean
-trusting its counter semantics to match the host's exactly; sharing the counter
-code removes the question, and the result is checked against the AES-256-CTR
-vector in NIST SP 800-38A. The AES core itself is checked against all three
-FIPS-197 vectors.
+Counter mode comes from `aesio`, but only after its behaviour is proven at
+import. Doing the counter arithmetic in Python instead cost 2347 ms per boot
+against 80 ms for the native call, so the fast path is worth having — provided it
+is the same transform. Two checks decide that:
+
+1. The AES-256-CTR known answer test from NIST SP 800-38A.
+2. A carry case that vector cannot reach. Its counter block ends `…fcfdfeff`, so
+   it never overflows the low 32 bits, meaning an implementation that increments
+   only the last four bytes would pass it. The second check uses a nonce ending
+   `ffffffff`, where such an implementation diverges on the very next block, and
+   compares against the portable code path.
+
+If either check fails, the portable implementation takes over: slower, same
+answers, no silent divergence. The portable path is itself pinned to the SP
+800-38A vector, and the AES core to all three FIPS-197 vectors.
 
 **What this protects.** A copy of the backup on its own is useless. That covers
 the export sitting in a sync folder, in a host backup, in cloud storage, or

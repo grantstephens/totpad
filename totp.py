@@ -11,6 +11,7 @@ try:
 except ImportError:  # pragma: no cover
     os = None
 
+import gc
 import json
 import struct
 
@@ -139,18 +140,36 @@ def _read_backup(path, key_file=None):
     An encrypted backup needs the device key file; a plaintext one is read as
     it is, so an unencrypted backup keeps working.
     """
-    with open(path, "rb") as f:
-        raw = f.read()
+    # One allocation, not two: bytearray(f.read()) would hold the file twice,
+    # and a fragmented heap cannot always find two 20 KB blocks at once.
+    gc.collect()
+    try:
+        size = os.stat(path)[6]
+    except (AttributeError, OSError, IndexError):
+        size = 0
+    if size:
+        raw = bytearray(size)
+        with open(path, "rb") as f:
+            f.readinto(raw)
+    else:  # a filesystem that cannot report sizes
+        with open(path, "rb") as f:
+            raw = bytearray(f.read())
 
     if envelope.is_envelope(raw):
         if not key_file:
             raise ValueError("Backup is encrypted but no key file was given")
-        raw = envelope.unseal(envelope.load_key(key_file), raw)
+        gc.collect()
+        # Decrypt inside the buffer just read, so the file is never held twice.
+        raw = envelope.unseal_into(envelope.load_key(key_file), raw)
 
     try:
         data = json.loads(raw)
     except ValueError:
         raise ValueError("Backup is not valid JSON: " + path)
+    except TypeError:  # a build whose json wants bytes rather than a view
+        data = json.loads(bytes(raw))
+    raw = None
+    gc.collect()
 
     if "services" not in data or data.get("servicesEncrypted"):
         raise ValueError(

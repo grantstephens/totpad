@@ -9,6 +9,49 @@ adafruit_hashlib, but CircuitPython builds only carry some algorithms:
 BLOCK_SIZES = {"SHA1": 64, "SHA256": 64, "SHA512": 128}
 
 
+def _factories():
+    """Map algorithm name to (incremental hash factory, HMAC block size)."""
+    try:
+        import hashlib as native
+    except ImportError:  # pragma: no cover
+        native = None
+    try:
+        import adafruit_hashlib as fallback
+    except ImportError:
+        fallback = None
+
+    def native_new(name):
+        def new():
+            return native.new(name)
+
+        return new
+
+    def fallback_new(name):
+        def new():
+            return getattr(fallback, name)()
+
+        return new
+
+    found = {}
+    for name, block in BLOCK_SIZES.items():
+        for module, factory in ((native, native_new), (fallback, fallback_new)):
+            if module is None:
+                continue
+            try:
+                probe = factory(name.lower())
+                obj = probe()
+                obj.update(b"probe")
+                obj.digest()
+            except (AttributeError, ValueError, TypeError):
+                continue
+            found[name] = (probe, block)
+            break
+    return found
+
+
+NEW = _factories()
+
+
 def _backends():
     try:
         import hashlib as native
@@ -60,11 +103,36 @@ def hmac_pads(key, digest, block=64):
     )
 
 
+class Hmac:
+    """Incremental HMAC.
+
+    Feeding the message in pieces matters on the device: concatenating a pad
+    onto a 20 KB backup needs a second 20 KB allocation, which an RP2040 with a
+    display and a dozen libraries loaded does not have to spare.
+    """
+
+    def __init__(self, key, algorithm="SHA256"):
+        factory, block = NEW[algorithm]
+        digest, _ = HASHERS[algorithm]
+        self._factory = factory
+        self._ipad, self._opad = hmac_pads(key, digest, block)
+        self._inner = factory()
+        self._inner.update(self._ipad)
+
+    def update(self, data):
+        self._inner.update(data)
+        return self
+
+    def digest(self):
+        outer = self._factory()
+        outer.update(self._opad)
+        outer.update(self._inner.digest())
+        return outer.digest()
+
+
 def hmac(key, message, algorithm="SHA256"):
-    """One-shot HMAC. For repeated use, pre-expand the pads instead."""
-    digest, block = HASHERS[algorithm]
-    ipad, opad = hmac_pads(key, digest, block)
-    return digest(opad + digest(ipad + message))
+    """One-shot HMAC, streamed so no copy of the message is made."""
+    return Hmac(key, algorithm).update(message).digest()
 
 
 def equal(a, b):
