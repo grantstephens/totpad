@@ -113,15 +113,24 @@ The one case where a colour can change is when the *set* of twelve accounts
 changes — a newcomer displacing somebody can make a clash resolve differently.
 Re-ranking on its own is safe.
 
-The assignment is worked out **once at boot**, so keys never rearrange
-themselves under your fingers mid-session. Today's presses take effect at the
-next power cycle. On a fresh device, before any counts exist, the keys are
-filled alphabetically so there is something to press.
+The assignment is redone **at boot and when the screen wakes**, never while the
+screen is on. Keys must not move between two presses, so the only safe moments
+are ones where no hand is on them: waking is the useful one, because the display
+was dark anyway. Set `RERANK_ON_WAKE = False` to hold the order until the next
+boot instead.
 
-Counts live in `/usage.json`. CircuitPython can only write to flash when the USB
-drive is hidden, which is the normal state, so counts persist. While you have
-the drive mounted to edit files, counting still works but is forgotten at the
-next reset.
+Because a colour belongs to the account rather than the slot, an account that
+climbs the ranking arrives at its new key still wearing the colour you know it
+by. That is what makes re-ranking tolerable rather than disorienting.
+
+On a fresh device, before any counts exist, the keys are filled alphabetically so
+there is something to press.
+
+Counts live in `/usage.json`, written when the screen blanks and at most every
+`SAVE_INTERVAL` seconds while in use, rather than on every press, to spare the
+flash. CircuitPython can only write to flash when the USB drive is hidden, which
+is the normal state, so counts persist. While you have the drive mounted to edit
+files, counting still works but is forgotten at the next reset.
 
 ### Clock health
 

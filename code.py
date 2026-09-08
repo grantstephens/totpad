@@ -38,6 +38,7 @@ FADE_FLOOR = 0.15       # how dim the selected key gets as its code expires
 LED_RATE = 0.1          # seconds between LED fade updates
 SAVE_INTERVAL = 30      # seconds between usage counter writes at most
 SANE_YEAR = 2025        # a clock reading before this is not to be trusted
+RERANK_ON_WAKE = True   # re-rank the shortcut keys when the screen wakes
 # -------------------------------------------------------------------------
 
 boot_start = time.monotonic()
@@ -56,17 +57,31 @@ NUM_KEYS = len(store)
 print("{} keys from {}{}".format(
     NUM_KEYS, store.path, " (encrypted)" if store.encrypted else " (PLAINTEXT)"))
 
-# Shortcuts are assigned once, from the counts as they were at boot, so the
-# keys do not rearrange themselves under your fingers mid-session. Today's
-# presses take effect at the next boot.
 usage = UsageTracker(USAGE_FILE)
 labels = [store.label(i) for i in range(NUM_KEYS)]
 index_of = {name: i for i, name in enumerate(labels)}
-shortcut_keys = [index_of[name] for name in usage.shortcuts(labels, len(KEY_COLORS))]
+shortcut_keys = []
+shortcut_colors = {}
+assigned_version = -1
 
-# Colours are keyed on the account, not the key position, so moving up the
-# rankings takes an account's colour with it.
-shortcut_colors = color_map([labels[key] for key in shortcut_keys])
+
+def assign_shortcuts():
+    """Work out which account sits on which key, from the current counts.
+
+    Never called while the screen is awake: keys must not move between two
+    presses. Boot and waking from the screen saver are the safe moments, and
+    waking is the useful one, since the display was dark and no hand was on the
+    keys. Colours are keyed on the account rather than the slot, so an account
+    that climbs the ranking keeps its colour and stays recognisable in its new
+    position.
+    """
+    global shortcut_keys, shortcut_colors, assigned_version
+    chosen, shortcut_colors = usage.plan(labels)
+    shortcut_keys = [index_of[name] for name in chosen]
+    assigned_version = usage.version
+
+
+assign_shortcuts()
 gc.collect()
 
 # The display and HID libraries cost about 50 KB of heap between them, so they
@@ -238,6 +253,8 @@ knob_pos = knob.position
 # Start on the most used account, which is also shortcut slot 0.
 current_key = shortcut_keys[0] if shortcut_keys else 0
 totp_code = select(current_key, time.time())
+print("shortcut keys:", ", ".join(
+    "%d=%s" % (slot + 1, store.label(key)) for slot, key in enumerate(shortcut_keys[:5])))
 
 last_second = -1
 last_bar = -1
@@ -267,6 +284,8 @@ while True:
             splash.hidden = False
             last_second = -1
             knob_pos = position
+            if RERANK_ON_WAKE and usage.version != assigned_version:
+                assign_shortcuts()
             paint_leds(current_key)
             continue
 

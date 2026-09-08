@@ -183,3 +183,51 @@ class TestAssignmentWiring(TrackerTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestVersionAndPlan(TrackerTestCase):
+    """The wake-time re-ranking depends on version and plan being reliable."""
+
+    def test_version_starts_at_zero_and_counts_presses(self):
+        t = self.tracker()
+        self.assertEqual(t.version, 0)
+        t.bump("GitHub")
+        self.assertEqual(t.version, 1)
+        t.bump("GitHub")
+        t.bump("AWS")
+        self.assertEqual(t.version, 3)
+
+    def test_version_does_not_move_without_presses(self):
+        t = self.tracker({"GitHub": 5})
+        before = t.version
+        t.ranked(["GitHub", "AWS"])
+        t.shortcuts(["GitHub", "AWS"], 12)
+        t.plan(["GitHub", "AWS"])
+        t.save()
+        self.assertEqual(t.version, before)
+
+    def test_plan_matches_shortcuts_and_colours(self):
+        labels = ["Alpha", "Beta", "Gamma", "Delta"]
+        t = self.tracker({"Gamma": 9})
+        order, colours = t.plan(labels)
+        self.assertEqual(order, t.shortcuts(labels, len(KEY_COLORS)))
+        self.assertEqual(colours, usage.color_map(order))
+        self.assertEqual(order[0], "Gamma")
+
+    def test_plan_respects_slot_limit(self):
+        labels = ["k%02d" % i for i in range(40)]
+        order, colours = self.tracker().plan(labels)
+        self.assertEqual(len(order), len(KEY_COLORS))
+        self.assertEqual(len(colours), len(KEY_COLORS))
+
+    def test_replanning_after_presses_reorders(self):
+        labels = ["Alpha", "Beta", "Gamma"]
+        t = self.tracker()
+        first, first_colours = t.plan(labels, slots=2)
+        self.assertEqual(first, ["Alpha", "Beta"])
+        for _ in range(4):
+            t.bump("Gamma")
+        second, second_colours = t.plan(labels, slots=2)
+        self.assertEqual(second, ["Gamma", "Alpha"])
+        # Colour follows the account across the reorder.
+        self.assertEqual(first_colours["Alpha"], second_colours["Alpha"])

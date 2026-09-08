@@ -80,6 +80,9 @@ class UsageTracker:
         self.counts = {}
         self.writable = True
         self.dirty = False
+        # Bumped on every press. A caller can compare it against the value it
+        # last planned against, to know whether the ranking has moved on.
+        self.version = 0
         self._load()
 
     def _load(self):
@@ -97,6 +100,7 @@ class UsageTracker:
         """Record one use of a label and return its new count."""
         self.counts[label] = self.counts.get(label, 0) + 1
         self.dirty = True
+        self.version += 1
         return self.counts[label]
 
     def count(self, label):
@@ -134,3 +138,12 @@ class UsageTracker:
         where position 0 is the first physical key.
         """
         return self.ranked(labels)[:slots]
+
+    def plan(self, labels, slots=len(KEY_COLORS)):
+        """Return (labels in key order, colour per label) for the shortcut keys.
+
+        The whole assignment in one call, so the caller can redo it at a sensible
+        moment without duplicating the ordering rules.
+        """
+        chosen = self.shortcuts(labels, slots)
+        return chosen, color_map(chosen)
