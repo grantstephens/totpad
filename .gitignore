@@ -1,0 +1,20 @@
+# Never commit real 2FAS backups or token dumps. Only *.2fas.example is allowed.
+*.2fas
+!*.2fas.example
+tokens.json
+secrets.py
+
+__pycache__/
+*.pyc
+.ropeproject/
+.aider*
+.venv/
+
+# CircuitPython / macOS / Windows volume litter
+boot_out.txt
+System Volume Information/
+.Trashes
+.fseventsd
+.metadata_never_index
+._*
+.DS_Store
