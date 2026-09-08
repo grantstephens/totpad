@@ -46,17 +46,29 @@ class Device:
         head, _, self.buf = self.buf.partition(needle)
         return head
 
-    def __enter__(self):
-        self.serial.write(b"\x03")  # interrupt code.py
-        time.sleep(0.3)
-        self.serial.write(b"\x03")
-        time.sleep(0.3)
-        self.serial.read(200000)
-        self.buf = b""
-        self.serial.write(b"\x01")  # raw REPL
-        self.read_until(b"raw REPL; CTRL-B to exit")
-        self.read_until(b">")
-        return self
+    def __enter__(self, attempts=5):
+        """Interrupt whatever is running and enter the raw REPL.
+
+        Retried, because a device still finishing a soft reboot swallows the
+        control characters and answers nothing.
+        """
+        for attempt in range(attempts):
+            self.serial.write(b"\x03")
+            time.sleep(0.3)
+            self.serial.write(b"\x03")
+            time.sleep(0.3)
+            self.serial.read(200000)
+            self.buf = b""
+            self.serial.write(b"\x01")
+            try:
+                self.read_until(b"raw REPL; CTRL-B to exit", budget=3)
+                self.read_until(b">", budget=3)
+                return self
+            except RuntimeError:
+                if attempt == attempts - 1:
+                    raise
+                time.sleep(1.0)
+        raise RuntimeError("could not enter the raw REPL")  # unreachable
 
     def __exit__(self, *exc):
         self.serial.write(b"\x02")  # friendly REPL

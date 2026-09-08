@@ -1,0 +1,37 @@
+#!/bin/sh
+# Refuse to commit real secrets. Install with 'make hooks'.
+#
+# This exists because it has already happened once: a real TOTP secret was
+# pasted into a test file as a vector and only caught by a manual scan.
+
+set -e
+
+staged=$(git diff --cached --name-only)
+
+blocked=$(printf '%s\n' "$staged" \
+    | grep -Ev '\.2fas\.example$' \
+    | grep -E '\.2fas$|\.2fas\.enc$|keyfile\.bin$|^secrets\.py$|tokens\.json$' || true)
+
+if [ -n "$blocked" ]; then
+    echo "pre-commit: refusing to commit secret material:" >&2
+    printf '  %s\n' $blocked >&2
+    echo "If this is deliberate, commit with --no-verify." >&2
+    exit 1
+fi
+
+# Base32 runs of 16+ characters that are not known test vectors. Real 2FAS
+# secrets look exactly like this.
+suspect=$(git diff --cached -U0 \
+    | grep -E '^\+' \
+    | grep -oE '\b[A-Z2-7]{16,}\b' \
+    | grep -Ev '^(GEZDGNBVGY3TQOJQ(GEZDGNBVGY3TQOJQ)*(GEZA|GEZDGNA)?|JBSWY3DPEHPK3PX[A-Z]|AAAAABBBBBCCCCCDDDDDEEEEEFFFFFGG|ABCDEFGHIJKLMNOPQRSTUVWXYZ234567)$' \
+    | grep -Ev '^[A-Z]+$' || true)
+
+if [ -n "$suspect" ]; then
+    echo "pre-commit: possible base32 secret in the diff:" >&2
+    printf '  %s\n' $suspect >&2
+    echo "Add it to the allow list in tools/pre-commit if it is a test vector." >&2
+    exit 1
+fi
+
+exit 0

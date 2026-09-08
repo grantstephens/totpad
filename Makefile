@@ -23,7 +23,7 @@ MODULES = totp.py usage.py envelope.py hashes.py aes.py
 SOURCES = boot.py code.py README.md
 BUILD = build
 
-.PHONY: help test install install-src install-serial serial-check set-clock libs firmware flash tools mpy keygen encrypt status check-secrets clean distclean
+.PHONY: help test install install-src install-serial serial-check set-clock check-clock hooks libs firmware flash tools mpy keygen encrypt status check-secrets clean distclean
 
 help:
 	@echo "Targets:"
@@ -36,6 +36,8 @@ help:
 	@echo "  install-serial Push code over USB serial, with the drive still hidden"
 	@echo "  serial-check   Report firmware, crypto backend, clock and memory"
 	@echo "  set-clock      Set the DS3231 from this host's NTP-synced clock"
+	@echo "  check-clock    Report clock error and drift rate, changing nothing"
+	@echo "  hooks          Install the pre-commit secret guard"
 	@echo "  libs           Install the required libraries from the bundle"
 	@echo "  firmware       Download CircuitPython $(CP_VERSION) for $(BOARD)"
 	@echo "  flash          Copy the firmware to a MacroPad in bootloader mode"
@@ -126,6 +128,14 @@ serial-check:
 
 set-clock:
 	python3 tools/set_clock.py -p $(PORT)
+
+check-clock:
+	python3 tools/set_clock.py -p $(PORT) --check
+
+hooks:
+	@cp tools/pre-commit .git/hooks/pre-commit
+	@chmod +x .git/hooks/pre-commit
+	@echo "Installed .git/hooks/pre-commit"
 
 $(BUNDLE):
 	@mkdir -p $(TOOLS)

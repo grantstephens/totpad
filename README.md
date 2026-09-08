@@ -19,7 +19,9 @@ between power cycles.
 | `aes.py` | Pure-Python AES, used where there is no `aesio` (the host, the tests). |
 | `tools/encrypt_backup.py` | Host side: make a key file, encrypt a backup, verify one. |
 | `tools/push_serial.py` | Install over USB serial while the drive is hidden. |
-| `tools/set_clock.py` | Set the DS3231 from the host's clock. |
+| `tools/set_clock.py` | Set or check the DS3231 against the host's clock. |
+| `tools/checks.py` | Health report, run on the device by `make serial-check`. |
+| `tools/pre-commit` | Refuses commits carrying secrets. Install with `make hooks`. |
 | `Makefile` | `make help` lists everything: test, mpy, install, libs, firmware, flash. |
 | `boot.py` | Hides the USB drive unless the top-left key is held at power-on. |
 | `example.2fas.example` | A fake backup used by the tests. Contains no real secrets. |
@@ -126,8 +128,13 @@ next reset.
 Every code depends on the clock, so a dead coin cell on the DS3231 turns every
 code silently wrong. The DS3231 latches an oscillator-stop flag across power
 loss, which is read at boot before the driver clears it. That, or a year earlier
-than `SANE_YEAR`, replaces the date on screen with `!! CLOCK LOST !!`. Fix it by
-running `rtc_setter.py`.
+than `SANE_YEAR`, replaces the date on screen with `!! CLOCK LOST !!`. Fix it with
+`make set-clock`.
+
+The flag only catches a stopped oscillator, not slow drift, which is the failure
+that actually bites: a minute out and every code is rejected with nothing shown
+on screen to explain it. `make check-clock` reports the current error, and the
+ppm rate once there is an interval to measure over.
 
 ### Token types
 
@@ -277,6 +284,24 @@ because 2FAS on your phone is the real backup, not this device.
 `secrets.py`, and `make check-secrets` fails on any of them being staged. Only
 `*.2fas.example` is allowed, and the examples hold RFC test vectors and dummy
 secrets.
+
+## Maintenance
+
+| Task | Command |
+| --- | --- |
+| Health report: firmware, backend, clock, memory | `make serial-check` |
+| Check the clock without changing it | `make check-clock` |
+| Set the clock from this host | `make set-clock` |
+| Install code with the drive hidden | `make install-serial` |
+| Install code with the drive mounted | `make install` |
+| New backup export | `make install BACKUP=export.2fas` |
+| Firmware upgrade | `make firmware flash libs install` |
+| Install the pre-commit guard | `make hooks` |
+
+Check the clock every few months. The DS3231 is specified to ±2 ppm, about a
+minute a year, and TOTP tolerates roughly ±30 s. If `make check-clock` reports a
+consistent rate well outside that, the aging offset register can trim it; the
+register is at its default of 0 today, which is the right place to start from.
 
 ## Credits
 
