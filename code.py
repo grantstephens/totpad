@@ -30,7 +30,7 @@ from adafruit_hid.keyboard import Keyboard
 from adafruit_hid.keyboard_layout_us import KeyboardLayoutUS
 from adafruit_hid.keycode import Keycode
 
-from totp import KeyStore
+from totp import KeyStore, STEAM_ALPHABET
 from usage import UsageTracker, KEY_COLORS, color_map
 
 # --| User Config |--------------------------------------------------------
@@ -41,9 +41,13 @@ NAME_WIDTH = 20         # characters of key name that fit on screen
 KNOB_STEP = -1          # set to 1 to swap the knob direction
 CONFIG_FILE = None      # explicit path, or None to auto-detect a *.2fas file
 USAGE_FILE = "/usage.json"
+COUNTER_FILE = "/hotp.json"
 LED_BRIGHTNESS = 0.15   # shortcut key brightness, 0 to disable the LEDs
 UNSELECTED_DIM = 0.3    # unselected shortcut keys, as a fraction of full colour
+FADE_FLOOR = 0.15       # how dim the selected key gets as its code expires
+LED_RATE = 0.1          # seconds between LED fade updates
 SAVE_INTERVAL = 30      # seconds between usage counter writes at most
+SANE_YEAR = 2025        # a clock reading before this is not to be trusted
 # -------------------------------------------------------------------------
 
 boot_start = time.monotonic()
@@ -51,7 +55,12 @@ boot_start = time.monotonic()
 # -------------------------------------------------------------------------
 #                    K E Y    L O A D I N G
 # -------------------------------------------------------------------------
-store = KeyStore(path=CONFIG_FILE, name_width=NAME_WIDTH, utc_offset=UTC_OFFSET)
+store = KeyStore(
+    path=CONFIG_FILE,
+    name_width=NAME_WIDTH,
+    utc_offset=UTC_OFFSET,
+    counter_file=COUNTER_FILE,
+)
 NUM_KEYS = len(store)
 
 # Shortcuts are assigned once, from the counts as they were at boot, so the
@@ -61,16 +70,32 @@ usage = UsageTracker(USAGE_FILE)
 labels = [store.label(i) for i in range(NUM_KEYS)]
 index_of = {name: i for i, name in enumerate(labels)}
 shortcut_keys = [index_of[name] for name in usage.shortcuts(labels, len(KEY_COLORS))]
-shortcut_slot = {key: slot for slot, key in enumerate(shortcut_keys)}
 
 # Colours are keyed on the account, not the key position, so moving up the
 # rankings takes an account's colour with it.
 shortcut_colors = color_map([labels[key] for key in shortcut_keys])
 gc.collect()
 
-# set board to use the DS3231 as its RTC
+# -------------------------------------------------------------------------
+#                    C L O C K
+# -------------------------------------------------------------------------
+# Every code depends on the clock, so a stopped oscillator or a dead coin cell
+# silently turns every code wrong. The DS3231 latches an oscillator-stop flag
+# across power loss, which is read before the driver clears it.
 i2c = board.STEMMA_I2C()
-rtc.set_time_source(adafruit_ds3231.DS3231(i2c))
+ds3231 = adafruit_ds3231.DS3231(i2c)
+try:
+    clock_lost_power = bool(ds3231.lost_power)
+except OSError as err:
+    clock_lost_power = True
+    print("RTC unreadable:", err)
+rtc.set_time_source(ds3231)
+
+
+def clock_suspect():
+    """True when the clock cannot be trusted to produce valid codes."""
+    return clock_lost_power or time.localtime().tm_year < SANE_YEAR
+
 
 # -------------------------------------------------------------------------
 #                    D I S P L A Y    S E T U P
@@ -80,7 +105,10 @@ display = board.DISPLAY
 # Secret Code font by Matthew Welch
 # http://www.squaregear.net/fonts/
 font = bitmap_font.load_font("/secrcode_28.bdf")
-font.load_glyphs(b"0123456789-")
+try:
+    font.load_glyphs(b"0123456789-" + STEAM_ALPHABET.encode())
+except (KeyError, ValueError, OSError):
+    font.load_glyphs(b"0123456789-")  # font carries digits only
 
 name = label.Label(terminalio.FONT, text="?" * NAME_WIDTH, color=0xFFFFFF)
 name.anchor_point = (0.0, 0.0)
@@ -98,7 +126,7 @@ rtc_time = label.Label(terminalio.FONT, text="12:34:56 AM")
 rtc_time.anchor_point = (0.0, 0.5)
 rtc_time.anchored_position = (0, 59)
 
-# Fixed 0..30 scale; odd periods are rescaled onto it below.
+# Fixed 0..30 scale; other periods are rescaled onto it below.
 progress_bar = HorizontalProgressBar(
     (68, 46), (55, 17), bar_color=0xFFFFFF, min_value=0, max_value=30
 )
@@ -147,8 +175,12 @@ def scaled(color, factor):
     return tuple(min(255, int(c * factor)) for c in color)
 
 
-def paint_leds(selected, lit=True):
-    """Colour the assigned keys, dimming the ones that are not selected.
+def paint_leds(selected, remaining=1.0, lit=True):
+    """Colour the assigned keys.
+
+    The selected account's key fades from full colour towards FADE_FLOOR as its
+    code approaches expiry, which puts the countdown under the hand that is
+    about to press it. Unselected keys sit at a constant dim level.
 
     Dimming rather than brightening, because the palette already sits at full
     channel values and boosting a saturated colour just clips.
@@ -157,12 +189,12 @@ def paint_leds(selected, lit=True):
         pixels.fill(0)
         pixels.show()
         return
+    fade = FADE_FLOOR + (1.0 - FADE_FLOOR) * remaining
     for slot in range(12):
         if slot < len(shortcut_keys):
             key_index = shortcut_keys[slot]
             color = shortcut_colors.get(labels[key_index], (0, 0, 0))
-            if key_index != selected:
-                color = scaled(color, UNSELECTED_DIM)
+            color = scaled(color, fade if key_index == selected else UNSELECTED_DIM)
             pixels[slot] = color
         else:
             pixels[slot] = 0
@@ -178,6 +210,16 @@ def type_code(key_index, unix_time):
     keyboard_layout.write(otp)
     keyboard.send(Keycode.ENTER)
     usage.bump(store.label(key_index))
+    if store.used(key_index):  # HOTP advances to the next counter
+        otp = store.code(key_index, unix_time)
+    return otp
+
+
+def select(key_index, unix_time):
+    """Show a key on the display and return its code."""
+    otp = store.code(key_index, unix_time)
+    name.text = store.label(key_index)
+    code.text = otp
     return otp
 
 
@@ -185,16 +227,19 @@ awake = True
 knob_pos = knob.position
 # Start on the most used account, which is also shortcut slot 0.
 current_key = shortcut_keys[0] if shortcut_keys else 0
-totp_code = store.code(current_key, time.time())
+totp_code = select(current_key, time.time())
 
-name.text = store.label(current_key)
-code.text = totp_code
 last_second = -1
 last_bar = -1
-now_mono = time.monotonic()
-wake_up_time = now_mono
-last_save = now_mono
+mono = time.monotonic()
+wake_up_time = mono
+last_save = mono
+last_led = mono
+second_mono = mono  # when the displayed second last ticked over
+seconds_into_window = 0
 paint_leds(current_key)
+if clock_lost_power:
+    print("RTC lost power: codes may be wrong until the clock is set")
 gc.collect()
 
 while True:
@@ -204,36 +249,38 @@ while True:
 
     if event or position != knob_pos:
         wake_up_time = mono
+
         if not awake:
+            # The first input only wakes the screen. Typing here would let a
+            # press in a bag send a real code to whatever window has focus.
             awake = True
             splash.hidden = False
             last_second = -1
+            knob_pos = position
             paint_leds(current_key)
+            continue
 
         if position != knob_pos:
             current_key = (current_key + KNOB_STEP * (position - knob_pos)) % NUM_KEYS
             knob_pos = position
-            totp_code = store.code(current_key, time.time())
-            name.text = store.label(current_key)
-            code.text = totp_code
+            totp_code = select(current_key, time.time())
             paint_leds(current_key)
 
         if event and event.pressed:
             if event.key_number == KNOB_BUTTON:
                 totp_code = type_code(current_key, time.time())
+                code.text = totp_code
             elif event.key_number < len(shortcut_keys):
                 # A shortcut key selects its account as well as typing it, so
                 # the screen always shows what was just sent.
                 current_key = shortcut_keys[event.key_number]
-                totp_code = type_code(current_key, time.time())
                 name.text = store.label(current_key)
+                totp_code = type_code(current_key, time.time())
                 code.text = totp_code
                 # Flash the key that was hit, then settle to its own colour.
                 pixels[event.key_number] = (255, 255, 255)
                 pixels.show()
                 last_second = -1
-            else:
-                continue  # unassigned key, nothing to type
 
         if event and event.released and event.key_number < len(shortcut_keys):
             paint_leds(current_key)
@@ -254,22 +301,45 @@ while True:
         usage.save()
         last_save = mono
 
+    # Fade the selected key between display refreshes. time.time() only has
+    # one second resolution, so the sub-second part comes from the monotonic
+    # clock since the last tick.
+    if mono - last_led > LED_RATE:
+        last_led = mono
+        if store.time_based(current_key):
+            period = store.period(current_key)
+            elapsed = seconds_into_window + (mono - second_mono)
+            paint_leds(current_key, remaining=max(0.0, 1.0 - elapsed / period))
+        else:
+            paint_leds(current_key)  # HOTP codes do not expire
+
     # Redraw at most once per second, and only what changed.
     now = time.time()
     tt = time.localtime(now)
     if tt.tm_sec != last_second:
         last_second = tt.tm_sec
+        second_mono = mono
 
         fresh = store.code(current_key, now)
         if fresh != totp_code:
             totp_code = fresh
             code.text = fresh
 
-        step = store.period(current_key)
-        bar = (now % step) * 30 // step
+        if store.time_based(current_key):
+            step = store.period(current_key)
+            seconds_into_window = now % step
+            bar = seconds_into_window * 30 // step
+        else:
+            seconds_into_window = 0
+            bar = 30  # HOTP codes are valid until used
         if bar != last_bar:
             last_bar = bar
             progress_bar.value = bar
+
+        if clock_suspect():
+            rtc_date.text = "!! CLOCK LOST !!"
+        else:
+            rtc_date.text = "{:4}/{:02}/{:02}".format(tt.tm_year, tt.tm_mon, tt.tm_mday)
 
         if USE_12HR:
             hour = tt.tm_hour % 12 or 12
@@ -277,5 +347,4 @@ while True:
         else:
             hour = tt.tm_hour
             ampm = ""
-        rtc_date.text = "{:4}/{:02}/{:02}".format(tt.tm_year, tt.tm_mon, tt.tm_mday)
         rtc_time.text = "{}:{:02}:{:02} {}".format(hour, tt.tm_min, tt.tm_sec, ampm)

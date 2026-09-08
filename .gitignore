@@ -18,3 +18,7 @@ System Volume Information/
 .metadata_never_index
 ._*
 .DS_Store
+
+# Downloaded toolchain, firmware and library bundles
+.tools/
+build/
