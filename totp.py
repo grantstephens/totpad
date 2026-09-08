@@ -14,51 +14,10 @@ except ImportError:  # pragma: no cover
 import json
 import struct
 
-
-def _hash_backends():
-    """Map algorithm name to (digest function, HMAC block size).
-
-    The native hashlib is C code and roughly an order of magnitude faster, but
-    CircuitPython builds only carry some algorithms: 10.3.0 on the MacroPad has
-    sha1 and sha256, so sha512 falls back to the pure-Python adafruit_hashlib.
-    """
-    try:
-        import hashlib as native
-    except ImportError:  # pragma: no cover
-        native = None
-    try:
-        import adafruit_hashlib as fallback
-    except ImportError:
-        fallback = None
-
-    def native_digest(name):
-        def digest(data):
-            return native.new(name, data).digest()
-
-        return digest
-
-    def fallback_digest(name):
-        def digest(data):
-            return getattr(fallback, name)(data).digest()
-
-        return digest
-
-    backends = {}
-    for name, block in (("sha1", 64), ("sha256", 64), ("sha512", 128)):
-        for module, factory in ((native, native_digest), (fallback, fallback_digest)):
-            if module is None:
-                continue
-            try:
-                digest = factory(name)
-                digest(b"probe")
-            except (AttributeError, ValueError, TypeError):
-                continue
-            backends[name.upper()] = (digest, block)
-            break
-    return backends
+import envelope
+from hashes import HASHERS, hmac_pads
 
 
-HASHERS = _hash_backends()
 DEFAULT_ALGORITHM = "SHA1"
 
 # Steam guard codes use five characters of this alphabet instead of digits.
@@ -91,17 +50,6 @@ def base32_decode(encoded):
             out.append(bitbuff >> bits)
             bitbuff &= (1 << bits) - 1
     return bytes(out)
-
-
-def hmac_pads(key, digest, block=64):
-    """Pre-expand a raw HMAC key into its inner and outer pads."""
-    if len(key) > block:
-        key = digest(key)
-    key = key + b"\0" * (block - len(key))
-    return (
-        bytes(b ^ 0x36 for b in key),
-        bytes(b ^ 0x5C for b in key),
-    )
 
 
 def steam_encode(value):
@@ -147,11 +95,17 @@ class Key:
 
 
 def find_config(root="/"):
-    """Return the path of the single *.2fas backup in ``root``."""
+    """Return the path of the backup in ``root``, preferring an encrypted one."""
+    plain = None
     for entry in sorted(os.listdir(root)):
-        if entry.endswith(".2fas"):
-            return root + entry if root.endswith("/") else root + "/" + entry
-    raise OSError("No *.2fas backup found in " + root)
+        path = root + entry if root.endswith("/") else root + "/" + entry
+        if entry.endswith(".2fas.enc"):
+            return path
+        if entry.endswith(".2fas") and plain is None:
+            plain = path
+    if plain:
+        return plain
+    raise OSError("No *.2fas or *.2fas.enc backup found in " + root)
 
 
 def _kind(otp):
@@ -173,10 +127,30 @@ def _algorithm(otp, kind):
     return HASHERS[name]
 
 
-def _read_backup(path):
-    """Return (services, group names by id) from a 2FAS backup file."""
-    with open(path, "r") as f:
-        data = json.load(f)
+def is_encrypted(path):
+    """True when a backup file is a totpad envelope rather than plain JSON."""
+    with open(path, "rb") as f:
+        return envelope.is_envelope(f.read(len(envelope.MAGIC)))
+
+
+def _read_backup(path, key_file=None):
+    """Return (services, group names by id) from a 2FAS backup file.
+
+    An encrypted backup needs the device key file; a plaintext one is read as
+    it is, so an unencrypted backup keeps working.
+    """
+    with open(path, "rb") as f:
+        raw = f.read()
+
+    if envelope.is_envelope(raw):
+        if not key_file:
+            raise ValueError("Backup is encrypted but no key file was given")
+        raw = envelope.unseal(envelope.load_key(key_file), raw)
+
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        raise ValueError("Backup is not valid JSON: " + path)
 
     if "services" not in data or data.get("servicesEncrypted"):
         raise ValueError(
@@ -209,13 +183,13 @@ def _label(svc, groups, duplicated, name_width):
     return name[:name_width]
 
 
-def load_keys(path, name_width=20):
+def load_keys(path, name_width=20, key_file=None):
     """Return a list of Key, sorted by label, ignoring case.
 
     Entries whose algorithm this build cannot compute are skipped rather than
     taken down with the whole file.
     """
-    services, groups = _read_backup(path)
+    services, groups = _read_backup(path, key_file)
 
     counts = {}
     for svc in services:
@@ -278,9 +252,11 @@ class KeyStore:
         utc_offset=0,
         root="/",
         counter_file="/hotp.json",
+        key_file=None,
     ):
         self.path = path or find_config(root)
-        self.keys = load_keys(self.path, name_width)
+        self.encrypted = is_encrypted(self.path)
+        self.keys = load_keys(self.path, name_width, key_file)
         self.utc_offset = utc_offset
         self.counter_file = counter_file
         self.counters_writable = True

@@ -42,6 +42,7 @@ KNOB_STEP = -1          # set to 1 to swap the knob direction
 CONFIG_FILE = None      # explicit path, or None to auto-detect a *.2fas file
 USAGE_FILE = "/usage.json"
 COUNTER_FILE = "/hotp.json"
+KEY_FILE = "/keyfile.bin"   # device key for an encrypted *.2fas.enc backup
 LED_BRIGHTNESS = 0.15   # shortcut key brightness, 0 to disable the LEDs
 UNSELECTED_DIM = 0.3    # unselected shortcut keys, as a fraction of full colour
 FADE_FLOOR = 0.15       # how dim the selected key gets as its code expires
@@ -60,8 +61,11 @@ store = KeyStore(
     name_width=NAME_WIDTH,
     utc_offset=UTC_OFFSET,
     counter_file=COUNTER_FILE,
+    key_file=KEY_FILE,
 )
 NUM_KEYS = len(store)
+print("{} keys from {}{}".format(
+    NUM_KEYS, store.path, " (encrypted)" if store.encrypted else " (PLAINTEXT)"))
 
 # Shortcuts are assigned once, from the counts as they were at boot, so the
 # keys do not rearrange themselves under your fingers mid-session. Today's

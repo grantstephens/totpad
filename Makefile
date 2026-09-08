@@ -4,6 +4,9 @@ BACKUP ?=
 
 # CircuitPython and library bundle versions. The .mpy bytecode format is tied
 # to the major version, so mpy-cross, /lib and the firmware move together.
+KEYFILE ?= $(HOME)/.config/totpad/keyfile.bin
+ENCRYPTED = $(BUILD)/totp.2fas.enc
+
 CP_VERSION ?= 10.3.0
 BUNDLE_DATE ?= 20260905
 BOARD ?= adafruit_macropad_rp2040
@@ -16,17 +19,19 @@ BUNDLE_URL = https://github.com/adafruit/Adafruit_CircuitPython_Bundle/releases/
 
 # Modules compiled to bytecode. code.py and boot.py must stay as source,
 # because CircuitPython only looks for those two by name.
-MODULES = totp.py usage.py
+MODULES = totp.py usage.py envelope.py hashes.py aes.py
 SOURCES = boot.py code.py README.md
 BUILD = build
 
-.PHONY: help test install install-src libs firmware flash tools mpy status check-secrets clean distclean
+.PHONY: help test install install-src libs firmware flash tools mpy keygen encrypt status check-secrets clean distclean
 
 help:
 	@echo "Targets:"
 	@echo "  test           Run the test suite"
+	@echo "  keygen         Create the device key file at $(KEYFILE)"
+	@echo "  encrypt        Encrypt BACKUP=x.2fas under the device key"
 	@echo "  mpy            Compile $(MODULES) to .mpy"
-	@echo "  install        Copy code to the MacroPad as .mpy (BACKUP=x.2fas for keys)"
+	@echo "  install        Copy code to the MacroPad as .mpy, encrypting BACKUP"
 	@echo "  install-src    Copy code as plain .py instead, for debugging"
 	@echo "  libs           Install the required libraries from the bundle"
 	@echo "  firmware       Download CircuitPython $(CP_VERSION) for $(BOARD)"
@@ -62,16 +67,34 @@ define require_circuitpy
 		exit 1; }
 endef
 
+# The backup goes on encrypted, with the key file beside it. Any older
+# plaintext copy is removed, or the device would happily prefer nothing and the
+# secrets would still be sitting there.
 define copy_backup
 	@if [ -n "$(BACKUP)" ]; then \
 		case "$(BACKUP)" in \
 			*.2fas) ;; \
 			*) echo "BACKUP must be a *.2fas file" >&2; exit 1 ;; \
 		esac; \
-		cp -v "$(BACKUP)" "$(CIRCUITPY)/totp.2fas"; \
+		test -f "$(KEYFILE)" || { echo "No key file at $(KEYFILE); run 'make keygen'" >&2; exit 1; }; \
+		mkdir -p $(BUILD); \
+		python3 tools/encrypt_backup.py "$(BACKUP)" -o $(ENCRYPTED) -k "$(KEYFILE)" || exit 1; \
+		cp -v $(ENCRYPTED) "$(CIRCUITPY)/totp.2fas.enc"; \
+		cp -v "$(KEYFILE)" "$(CIRCUITPY)/keyfile.bin"; \
+		rm -fv "$(CIRCUITPY)"/*.2fas; \
+		python3 tools/encrypt_backup.py --verify "$(CIRCUITPY)/totp.2fas.enc" -k "$(CIRCUITPY)/keyfile.bin" || exit 1; \
 	fi
 	@sync
 endef
+
+keygen:
+	python3 tools/encrypt_backup.py --new-key -k "$(KEYFILE)"
+
+encrypt:
+	@test -n "$(BACKUP)" || { echo "Set BACKUP=path/to/backup.2fas" >&2; exit 1; }
+	@mkdir -p $(BUILD)
+	python3 tools/encrypt_backup.py "$(BACKUP)" -o $(ENCRYPTED) -k "$(KEYFILE)"
+	python3 tools/encrypt_backup.py --verify $(ENCRYPTED) -k "$(KEYFILE)"
 
 install: mpy
 	$(require_circuitpy)

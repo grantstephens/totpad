@@ -14,6 +14,10 @@ between power cycles.
 | `code.py` | Hardware, display and input loop. |
 | `totp.py` | Key loading and code generation. No hardware imports, so it is testable on CPython. |
 | `usage.py` | Press counters, shortcut ranking, and the per-account colour map. |
+| `envelope.py` | Device-bound encryption of the backup: AES-256-CTR then HMAC-SHA256. |
+| `hashes.py` | Hash backends shared by the generator and the envelope. |
+| `aes.py` | Pure-Python AES, used where there is no `aesio` (the host, the tests). |
+| `tools/encrypt_backup.py` | Host side: make a key file, encrypt a backup, verify one. |
 | `Makefile` | `make help` lists everything: test, mpy, install, libs, firmware, flash. |
 | `boot.py` | Hides the USB drive unless the top-left key is held at power-on. |
 | `example.2fas.example` | A fake backup used by the tests. Contains no real secrets. |
@@ -41,12 +45,19 @@ Copy onto the CIRCUITPY volume:
 /code.py
 /totp.mpy            <- compiled by 'make install'
 /usage.mpy
+/envelope.mpy
+/hashes.mpy
+/aes.mpy
 /secrcode_28.bdf     <- Secret Code font by Matthew Welch
-/<anything>.2fas     <- your 2FAS backup
+/totp.2fas.enc       <- your 2FAS backup, encrypted to this device
+/keyfile.bin         <- the 32 byte device key
 /usage.json          <- created by the device, shortcut press counts
 /hotp.json           <- created by the device, HOTP counters
 /lib/                <- the libraries listed above
 ```
+
+A plaintext `*.2fas` is still accepted, so nothing breaks if you drop one on;
+an encrypted backup is preferred when both are present.
 
 `code.py` and `boot.py` stay as source, since CircuitPython only looks for
 those two by name. The other modules ship as `.mpy` to cut boot time;
@@ -144,9 +155,14 @@ and so on, clipped to fit the 20 character display.
 1. Export an unencrypted backup from the 2FAS app.
 2. Hold the **top-left key (KEY1)** while plugging the MacroPad in. The LED
    under that key flashes green and CIRCUITPY mounts.
-3. Replace the `.2fas` file, keeping the extension.
+3. `make install BACKUP=path/to/export.2fas`, which encrypts it to the device
+   key, copies it as `totp.2fas.enc`, deletes any plaintext copy from the drive,
+   and reads the result back to prove the device will be able to.
 4. Replug without holding the key. The LED flashes red, the drive stays hidden,
    and the filesystem becomes writable to the device again.
+
+Delete the plaintext export from the host when you are done. It is the copy
+most likely to end up somewhere you did not intend, such as a sync folder.
 
 Usage counters are keyed on the account label, not its position, so they survive
 adding, removing and reordering entries in the backup.
@@ -177,14 +193,58 @@ separately against Python's `hmac` and `base64` for every key in a backup.
 
 ## Security
 
-A `.2fas` backup holds your TOTP secrets in plain text, and CircuitPython
-offers no secure element. `boot.py` keeps the file off any host you plug into,
-but anything running on the device can read it, and the RP2040 bootloader can
-dump the flash. **Treat the MacroPad as a physical key**, and keep the 2FAS
-backup on your phone as the recovery path.
+### Encryption of the backup
 
-The `.gitignore` here refuses `*.2fas`, `tokens.json`, and `secrets.py` so a
-real backup cannot be committed by accident. Only `*.2fas.example` is allowed.
+The backup on the device is encrypted under a 32 byte key that exists only as
+`/keyfile.bin` on the MacroPad and as your host copy of it. The format is
+AES-256 in counter mode, then HMAC-SHA256 over the header and ciphertext, with
+the tag checked before any plaintext is produced:
+
+    b"TPAD" | version | nonce (16) | ciphertext | tag (32)
+
+Encryption and authentication keys are derived separately from the key file, so
+neither is used for two purposes. A fresh random nonce per sealing means
+re-encrypting the same export twice produces different files.
+
+AES is driven as a plain block cipher, with the counter arithmetic and the XOR
+in `envelope.py`. `aesio` has a counter mode of its own, but using it would mean
+trusting its counter semantics to match the host's exactly; sharing the counter
+code removes the question, and the result is checked against the AES-256-CTR
+vector in NIST SP 800-38A. The AES core itself is checked against all three
+FIPS-197 vectors.
+
+**What this protects.** A copy of the backup on its own is useless. That covers
+the export sitting in a sync folder, in a host backup, in cloud storage, or
+grabbed by anything that briefly mounted the drive. This is the realistic leak,
+and it is now closed.
+
+**What this does not protect.** Someone holding the MacroPad gets everything.
+The key file and the ciphertext live in the same flash, and an RP2040 can be
+dumped wholesale over BOOTSEL with `picotool save` regardless of what
+CircuitPython does. There is no secure element, no OTP secret storage and no
+secure boot on this chip. Encryption that the device performs unattended cannot
+survive an attacker who owns the device; treat the MacroPad as a physical key.
+
+Closing that gap needs a secret that is not on the device, meaning a passphrase
+typed in at boot. The firmware has native SHA256, so PBKDF2 is not as hopeless
+as pure Python would make it, but a passphrase entered on twelve keys and a
+knob is a real daily cost. Not implemented.
+
+### Key file handling
+
+`make keygen` writes the key file at `~/.config/totpad/keyfile.bin` with mode
+0600 and refuses to overwrite an existing one, because every backup encrypted
+under the old key would become unreadable. Back it up where you keep passwords.
+
+If you lose both copies, the encrypted backup is dead — which is survivable,
+because 2FAS on your phone is the real backup, not this device.
+
+### Repository hygiene
+
+`.gitignore` refuses `*.2fas`, `*.2fas.enc`, `keyfile.bin`, `tokens.json` and
+`secrets.py`, and `make check-secrets` fails on any of them being staged. Only
+`*.2fas.example` is allowed, and the examples hold RFC test vectors and dummy
+secrets.
 
 ## Credits
 

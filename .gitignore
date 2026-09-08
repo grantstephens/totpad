@@ -22,3 +22,8 @@ System Volume Information/
 # Downloaded toolchain, firmware and library bundles
 .tools/
 build/
+
+# Device key and encrypted backups must never be committed
+keyfile.bin
+*.key
+*.2fas.enc
