@@ -31,7 +31,7 @@ from adafruit_hid.keyboard_layout_us import KeyboardLayoutUS
 from adafruit_hid.keycode import Keycode
 
 from totp import KeyStore
-from usage import UsageTracker, KEY_COLORS
+from usage import UsageTracker, KEY_COLORS, color_map
 
 # --| User Config |--------------------------------------------------------
 UTC_OFFSET = 0          # time zone offset
@@ -62,6 +62,10 @@ labels = [store.label(i) for i in range(NUM_KEYS)]
 index_of = {name: i for i, name in enumerate(labels)}
 shortcut_keys = [index_of[name] for name in usage.shortcuts(labels, len(KEY_COLORS))]
 shortcut_slot = {key: slot for slot, key in enumerate(shortcut_keys)}
+
+# Colours are keyed on the account, not the key position, so moving up the
+# rankings takes an account's colour with it.
+shortcut_colors = color_map([labels[key] for key in shortcut_keys])
 gc.collect()
 
 # set board to use the DS3231 as its RTC
@@ -155,8 +159,9 @@ def paint_leds(selected, lit=True):
         return
     for slot in range(12):
         if slot < len(shortcut_keys):
-            color = KEY_COLORS[slot]
-            if shortcut_keys[slot] != selected:
+            key_index = shortcut_keys[slot]
+            color = shortcut_colors.get(labels[key_index], (0, 0, 0))
+            if key_index != selected:
                 color = scaled(color, UNSELECTED_DIM)
             pixels[slot] = color
         else:

@@ -13,7 +13,7 @@ between power cycles.
 | --- | --- |
 | `code.py` | Hardware, display and input loop. |
 | `totp.py` | Key loading and code generation. No hardware imports, so it is testable on CPython. |
-| `usage.py` | Press counters, shortcut ranking and the key colour palette. |
+| `usage.py` | Press counters, shortcut ranking, and the per-account colour map. |
 | `boot.py` | Hides the USB drive unless the top-left key is held at power-on. |
 | `example.2fas.example` | A fake backup used by the tests. Contains no real secrets. |
 | `tests/` | `make test`  |
@@ -58,9 +58,19 @@ picked up automatically.
 ### Shortcut keys
 
 Every time a code is typed, by key or by knob, that account's counter goes up.
-The twelve most used accounts get the twelve keys, most used at the top left,
-each in its own colour from a fixed palette. The selected account's key glows at
-full brightness while the rest stay dim.
+The twelve most used accounts get the twelve keys, most used at the top left.
+The selected account's key glows at full brightness while the rest stay dim.
+
+**A colour belongs to the account, not to the key.** It is derived from a hash
+of the account label, so GitHub is the same colour whether it sits at KEY1 or
+KEY10, and climbing the rankings carries its colour along. Clashes within the
+twelve are resolved by probing forward through the palette, walking the accounts
+alphabetically rather than by rank, so a change in ranking alone never repaints
+anything.
+
+The one case where a colour can change is when the *set* of twelve accounts
+changes — a newcomer displacing somebody can make a clash resolve differently.
+Re-ranking on its own is safe.
 
 The assignment is worked out **once at boot**, so keys never rearrange
 themselves under your fingers mid-session. Today's presses take effect at the

@@ -9,9 +9,10 @@ Kept free of hardware imports so it runs on CPython for the test suite.
 
 import json
 
-# Twelve hand-picked, visually distinct colours, one per MacroPad key. Evenly
-# spaced hues put yellow next to chartreuse, which is hard to tell apart at the
-# low brightness these LEDs run at.
+# Twelve hand-picked, visually distinct colours. A colour belongs to an account
+# rather than to a key position, so it travels with the account as its ranking
+# changes. Evenly spaced hues put yellow next to chartreuse, which is hard to
+# tell apart at the low brightness these LEDs run at.
 KEY_COLORS = (
     (255, 0, 0),      # red
     (255, 72, 0),     # orange
@@ -26,6 +27,45 @@ KEY_COLORS = (
     (255, 0, 200),    # magenta
     (255, 255, 255),  # white
 )
+
+
+def stable_hash(text):
+    """FNV-1a over the UTF-8 bytes.
+
+    Python's own hash is salted per process on CPython, so it cannot be used to
+    derive a colour that has to look the same after every reboot.
+    """
+    h = 0x811C9DC5
+    for byte in text.encode("utf-8"):
+        h = ((h ^ byte) * 0x01000193) & 0xFFFFFFFF
+    return h
+
+
+def color_map(labels, palette=KEY_COLORS):
+    """Pick a colour per label, keyed on the label itself.
+
+    An account keeps its colour as it moves up and down the rankings, so the
+    colour identifies the account rather than the key position. Each label
+    prefers the palette entry its hash lands on, and clashes probe forward.
+
+    Resolution walks the labels alphabetically, not in ranking order, so a
+    change in ranking alone never repaints anything. Colours can still shift
+    when the set of shortcut accounts changes and a clash resolves differently.
+
+    Labels beyond the size of the palette get no colour, so pass in at most
+    ``len(palette)`` of them.
+    """
+    taken = {}
+    for name in sorted(labels, key=lambda l: l.lower()):
+        preferred = stable_hash(name) % len(palette)
+        for probe in range(len(palette)):
+            slot = (preferred + probe) % len(palette)
+            if slot not in taken:
+                taken[slot] = name
+                break
+        else:
+            break  # palette exhausted
+    return {name: palette[slot] for slot, name in taken.items()}
 
 
 class UsageTracker:
