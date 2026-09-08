@@ -1,6 +1,6 @@
 CIRCUITPY ?= /media/$(USER)/CIRCUITPY
 BACKUP ?=
-FILES = boot.py code.py totp.py README.md
+FILES = boot.py code.py totp.py usage.py README.md
 
 .PHONY: help test install status check-secrets clean
 

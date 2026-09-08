@@ -6,6 +6,11 @@
 # Hold the top-left key (KEY1) while plugging in or resetting to mount the
 # drive. The serial console and the HID keyboard are unaffected either way.
 #
+# While the drive is hidden the filesystem is remounted writable for code.py,
+# so the shortcut usage counters in /usage.json survive a power cycle. Mounting
+# the drive to edit files makes it read-only to code again, and counters then
+# only last until the next reset.
+#
 # Recovery, if the drive ever stays hidden: double-tap RESET to reach the
 # RP2040 bootloader (RPI-RP2), which can always be written to.
 
@@ -26,6 +31,12 @@ key.deinit()
 
 if not unlocked:
     storage.disable_usb_drive()
+    # With no host holding the volume, code.py may write to flash, which is how
+    # the shortcut usage counters persist across power cycles.
+    try:
+        storage.remount("/", readonly=False)
+    except RuntimeError as err:
+        print("Filesystem stays read-only:", err)
 
 # Green under KEY1 means the drive is mounted, red means it is hidden.
 try:

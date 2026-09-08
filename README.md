@@ -13,6 +13,7 @@ between power cycles.
 | --- | --- |
 | `code.py` | Hardware, display and input loop. |
 | `totp.py` | Key loading and code generation. No hardware imports, so it is testable on CPython. |
+| `usage.py` | Press counters, shortcut ranking and the key colour palette. |
 | `boot.py` | Hides the USB drive unless the top-left key is held at power-on. |
 | `example.2fas.example` | A fake backup used by the tests. Contains no real secrets. |
 | `tests/` | `make test`  |
@@ -33,8 +34,10 @@ Copy onto the CIRCUITPY volume:
 /boot.py
 /code.py
 /totp.py
+/usage.py
 /secrcode_28.bdf     <- Secret Code font by Matthew Welch
 /<anything>.2fas     <- your 2FAS backup
+/usage.json          <- created by the device, shortcut press counts
 /lib/                <- the libraries listed above
 ```
 
@@ -46,12 +49,33 @@ picked up automatically.
 
 - **Turn the knob** to pick an account. Accounts are listed alphabetically,
   ignoring case, and the code appears immediately.
-- **Press the knob** to type the code followed by Enter.
-- The screen blanks after 60 s of no input and wakes on any input.
+- **Press the knob** to type the code for the selected account, followed by
+  Enter.
+- **Press a lit key** to type that account's code directly, without scrolling to
+  it. The display switches to it too, so you can see what was sent.
+- The screen and the LEDs go dark after 60 s of no input, and wake on any input.
+
+### Shortcut keys
+
+Every time a code is typed, by key or by knob, that account's counter goes up.
+The twelve most used accounts get the twelve keys, most used at the top left,
+each in its own colour from a fixed palette. The selected account's key glows at
+full brightness while the rest stay dim.
+
+The assignment is worked out **once at boot**, so keys never rearrange
+themselves under your fingers mid-session. Today's presses take effect at the
+next power cycle. On a fresh device, before any counts exist, the keys are
+filled alphabetically so there is something to press.
+
+Counts live in `/usage.json`. CircuitPython can only write to flash when the USB
+drive is hidden, which is the normal state, so counts persist. While you have
+the drive mounted to edit files, counting still works but is forgotten at the
+next reset.
 
 Settings live at the top of `code.py`: `UTC_OFFSET`, `USE_12HR`,
 `DISPLAY_TIMEOUT`, `NAME_WIDTH`, `KNOB_STEP` (flip to `1` to reverse the knob),
-and `CONFIG_FILE` to skip auto-detection.
+`CONFIG_FILE` to skip auto-detection, `LED_BRIGHTNESS` (`0` turns the LEDs off),
+`UNSELECTED_DIM`, and `SAVE_INTERVAL`.
 
 Accounts that share a service name get the account appended to the label, so
 several Google entries become `Google/alice@example`, `Google/bob@example.c`,
@@ -63,8 +87,11 @@ and so on, clipped to fit the 20 character display.
 2. Hold the **top-left key (KEY1)** while plugging the MacroPad in. The LED
    under that key flashes green and CIRCUITPY mounts.
 3. Replace the `.2fas` file, keeping the extension.
-4. Replug without holding the key. The LED flashes red and the drive stays
-   hidden.
+4. Replug without holding the key. The LED flashes red, the drive stays hidden,
+   and the filesystem becomes writable to the device again.
+
+Usage counters are keyed on the account label, not its position, so they survive
+adding, removing and reordering entries in the backup.
 
 `boot.py` only runs on a hard reset or replug, not on a soft reload. If the
 drive ever refuses to appear, double-tap RESET to reach the RP2040 bootloader
